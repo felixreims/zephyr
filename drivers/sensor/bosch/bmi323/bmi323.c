@@ -381,6 +381,48 @@ static int bosch_bmi323_driver_api_set_gyro_feature_mask(const struct device *de
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
 }
 
+static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
+{
+	/* Page 53-55 in the datasheet */
+	uint16_t cmd;
+	int16_t buf;
+	int ret;
+	
+	cmd = IMU_BOSCH_BMI323_REG_VALUE(CMD, CMD, SELF_CALIBRATION);
+
+	/* TODO: Ensure correct pre-conditions 
+		We might need to call self calibration after initialization to ensure pre-conditions 
+		using ATTR_CALIB_TARGET */
+
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_CMD, &cmd, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* The duration of the self-calibration for standard settings is approximately 350 ms for the 
+	measurement of the re-scaling for the angular rate and 80 ms for the gyroscope offset measurement. 
+	Added 70 ms for margin. */
+	k_msleep(500);
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_FEATURE_IO1, &buf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_SC_ST_COMPLETE_OFFSET)){
+		
+		if (buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_GYRO_SC_RESULT_OFFSET)){
+			return 0;
+		} else if ( !(buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_GYRO_SC_RESULT_OFFSET)) ) {
+			return -EIO;
+		}
+
+	} else {
+		return -EAGAIN;
+	}
+	
+}
+
 static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum sensor_channel chan,
 					    enum sensor_attribute attr,
 					    const struct sensor_value *val)
