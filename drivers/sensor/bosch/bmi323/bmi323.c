@@ -390,10 +390,6 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	
 	cmd = IMU_BOSCH_BMI323_REG_VALUE(CMD, CMD, SELF_CALIBRATION);
 
-	/* TODO: Ensure correct pre-conditions 
-		We might need to call self calibration after initialization to ensure pre-conditions 
-		using ATTR_CALIB_TARGET */
-
 	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_CMD, &cmd, 1);
 	if (ret < 0) {
 		return ret;
@@ -409,18 +405,40 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 		return ret;
 	}
 
-	if (buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_SC_ST_COMPLETE_OFFSET)){
+	if ((buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_SC_ST_COMPLETE_OFFSET))
+					== BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_SC_ST_COMPLETE_OFFSET)){
 		
-		if (buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_GYRO_SC_RESULT_OFFSET)){
+		if ((buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_GYRO_SC_RESULT_OFFSET))
+						== BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_GYRO_SC_RESULT_OFFSET)){
 			return 0;
-		} else if ( !(buf & BIT(IMU_BOSCH_BMI323_REG_FEATURE_IO1_GYRO_SC_RESULT_OFFSET)) ) {
-			return -EIO;
-		}
+		} 
+		return -EIO;
+	} 
+	return -EAGAIN;
+}
 
-	} else {
-		return -EAGAIN;
+static int bosch_bmi323_set_gyro_bandwidth(const struct device *dev,
+							 const struct sensor_value *val)
+{
+
+	int ret;
+	uint16_t gyro_conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
+
+	if (ret < 0) {
+		return ret;
 	}
-	
+
+	gyro_conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYRO_CONF, BANDWIDTH);
+
+	if (val->val1) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, BANDWIDTH, ODR_4);
+	} else {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, BANDWIDTH, ODR_2);
+	}
+
+	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
 }
 
 static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum sensor_channel chan,
@@ -472,6 +490,16 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_FEATURE_MASK:
 			ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, val);
+
+			break;
+		
+		case SENSOR_ATTR_CALIB_TARGET:
+			ret = bosch_bmi323_gyro_self_calibration(dev);
+
+			break;
+		
+		case SENSOR_ATTR_RESOLUTION:
+			ret = bosch_bmi323_set_gyro_bandwidth(dev, val);
 
 			break;
 
