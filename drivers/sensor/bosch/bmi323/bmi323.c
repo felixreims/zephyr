@@ -25,6 +25,9 @@ LOG_MODULE_REGISTER(bosch_bmi323);
 #define IMU_BOSCH_DIE_TEMP_OFFSET_MICRO_DEG_CELSIUS (23000000LL)
 #define IMU_BOSCH_DIE_TEMP_MICRO_DEG_CELSIUS_LSB    (1953L)
 
+#define IMU_BOSCH_BMI323_SC_TIMEOUT_MS 430
+#define IMU_BOSCH_BMI323_SC_POLL_MS     10
+
 typedef void (*bosch_bmi323_gpio_callback_ptr)(const struct device *dev, struct gpio_callback *cb,
 					       uint32_t pins);
 
@@ -277,6 +280,165 @@ static int bosch_bmi323_driver_api_set_acc_feature_mask(const struct device *dev
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
 }
 
+static int bosch_bmi323_driver_api_set_acc_offset(const struct device *dev, 
+						const struct sensor_value *val, enum sensor_attribute chan)
+{
+	/* NOTE: Accelerometer must be disabled before updating values (page 53 in the datasheet) */
+
+	int ret;
+	struct sensor_value modeval = {1, 0};
+	ret = bosch_bmi323_driver_api_get_acc_feature_mask(dev, &modeval);
+	if (ret < 0) {
+		return ret;
+	} else if (modeval.val1 != 0) {
+		return -EINVAL;
+	}
+
+	uint16_t regval;
+	int16_t offs16;
+	/* Sensor value is interpreted as Gs, IMU needs uG */
+	int64_t ug = (int64_t)val->val1 * 1000000LL + (int64_t)val->val2;
+
+	/** Convert uG to register value
+	 * Divide by 30.52 as specified in the datasheet on page 123.
+	 * 1/30.52 = 100/3052
+	 * Use half-divisor 3052/2=1526 for rounding to nearest.
+	 * */
+	int64_t offs64;
+	if (ug >= 0) {
+        offs64 = (ug * 100LL + 1526LL) / 3052LL;
+    } else {
+        offs64 = (ug * 100LL - 1526LL) / 3052LL;
+    }
+	/* The value is 14 bits signed */
+	if (offs64 > 8191 || offs64 < -8192) {
+		return -EINVAL;
+	}
+	offs16 = (int16_t)offs64;
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_DP_OFF_X, ACC_DP_OFF_X);
+		regval |= ((uint16_t)(offs16 & 0x3FFF)) << IMU_BOSCH_BMI323_REG_ACC_DP_OFF_X_ACC_DP_OFF_X_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_X, &regval, 1);
+		break;
+		
+	case SENSOR_CHAN_ACCEL_Y:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_DP_OFF_Y, ACC_DP_OFF_Y);
+		regval |= ((uint16_t)(offs16 & 0x3FFF)) << IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Y_ACC_DP_OFF_Y_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Y, &regval, 1);
+		break;
+
+	case SENSOR_CHAN_ACCEL_Z:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_DP_OFF_Z, ACC_DP_OFF_Z);
+		regval |= ((uint16_t)(offs16 & 0x3FFF)) << IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Z_ACC_DP_OFF_Z_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Z, &regval, 1);
+		break;
+
+	default:
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
+static int bosch_bmi323_driver_api_set_acc_gain(const struct device *dev, 
+						const struct sensor_value *val, enum sensor_attribute chan)
+{
+	/* NOTE: Accelerometer must be disabled before updating values (page 53 in the datasheet) */
+
+	int ret;
+	struct sensor_value modeval = {1, 0};
+	ret = bosch_bmi323_driver_api_get_acc_feature_mask(dev, &modeval);
+	if (ret < 0) {
+		return ret;
+	} else if (modeval.val1 != 0) {
+		return -EINVAL;
+	}
+
+	uint16_t regval;	
+	/* Sensor value is interpreted as gain factor (1.0 ± 0.03125 as speficifed in datasheet) */
+	int64_t g_minus_1_ppm = ((int64_t)val->val1 - 1LL) * 1000000LL + (int64_t)val->val2;
+	int64_t g_percent = g_minus_1_ppm / 10000LL;
+
+	/** Convert percentage to register value
+     * Register range: -127 to +127 covers -3.125% to +3.125%
+     * 1 LSB = 3.125% / 127
+     * percent * 127 / 3.125 = percent * 127000 / 3125 = percent * 1016 / 25
+	 * Use half divisor 25/2 = 12.5 (rounded to 13) for rounding to nearest.
+     */
+	int64_t gain64;
+    if (g_percent >= 0) {
+        gain64 = (g_percent * 1016LL + 13LL) / 25LL;
+    } else {
+        gain64 = (g_percent * 1016LL - 13LL) / 25LL;
+    }
+    
+    if (gain64 > 127 || gain64 < -127) {
+        return -EINVAL;
+    }
+	int16_t gain16 = (int16_t)gain64;
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_DP_DGAIN_X, ACC_DP_DGAIN_X);
+		regval |= ((uint16_t)(gain16 & 0x00FF)) << IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_X_ACC_DP_DGAIN_X_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_X, &regval, 1);
+		break;
+
+	case SENSOR_CHAN_ACCEL_Y:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_DP_DGAIN_Y, ACC_DP_DGAIN_Y);
+		regval |= ((uint16_t)(gain16 & 0x00FF)) << IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Y_ACC_DP_DGAIN_Y_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Y, &regval, 1);
+		break;
+
+	case SENSOR_CHAN_ACCEL_Z:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_DP_DGAIN_Z, ACC_DP_DGAIN_Z);
+		regval |= ((uint16_t)(gain16 & 0x00FF)) << IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Z_ACC_DP_DGAIN_Z_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Z, &regval, 1);
+		break;
+
+	default:
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
 static int bosch_bmi323_driver_api_set_gyro_odr(const struct device *dev,
 						const struct sensor_value *val)
 {
@@ -439,35 +601,207 @@ static int bosch_bmi323_driver_api_set_gyro_feature_mask(const struct device *de
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
 }
 
+static int bosch_bmi323_driver_api_set_gyro_offset(const struct device *dev, 
+						const struct sensor_value *val, enum sensor_attribute chan)
+{
+	/* NOTE: Gyro must be disabled before updating values (page 53 in the datasheet) */
+
+	int ret;
+	struct sensor_value modeval = {1, 0};
+	ret = bosch_bmi323_driver_api_get_gyro_feature_mask(dev, &modeval);
+	if (ret < 0) {
+		return ret;
+	} else if (modeval.val1 != 0) {
+		return -EINVAL;
+	}
+
+	uint16_t regval;
+	int16_t offs16;
+
+	/* Sensor value is interpreted as deg/s. w is in udeg/s */
+	int64_t w = (int64_t)val->val1 * 1000000LL + (int64_t)val->val2;
+
+	/** Convert deg/s to register value
+	 * w is in micro-deg/s
+	 * 1 LSB = 0.061 deg/s = 61 000 micro-deg/s
+	 * => offset_LSB = w / 61000
+	 * Use half-divisor 61000/2 = 30500 for rounding to nearest.
+	 * */
+	int64_t offs64;
+	if (w >= 0) {
+        offs64 = (w + 30500LL) / 61000LL;
+    } else {
+        offs64 = (w - 30500LL) / 61000LL;
+    }
+	/* The value is 10 bits signed */
+	if (offs64 > 511 || offs64 < -512) {
+		return -EINVAL;
+	}
+	offs16 = (int16_t)offs64;
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_DP_OFF_X, GYR_DP_OFF_X);
+		regval |= ((uint16_t)(offs16 & 0x03FF)) << IMU_BOSCH_BMI323_REG_GYR_DP_OFF_X_GYR_DP_OFF_X_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_X, &regval, 1);
+		break;
+		
+	case SENSOR_CHAN_GYRO_Y:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_DP_OFF_Y, GYR_DP_OFF_Y);
+		regval |= ((uint16_t)(offs16 & 0x03FF)) << IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Y_GYR_DP_OFF_Y_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Y, &regval, 1);
+		break;
+
+	case SENSOR_CHAN_GYRO_Z:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_DP_OFF_Z, GYR_DP_OFF_Z);
+		regval |= ((uint16_t)(offs16 & 0x03FF)) << IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Z_GYR_DP_OFF_Z_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Z, &regval, 1);
+		break;
+
+	default:
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
+static int bosch_bmi323_driver_api_set_gyro_gain(const struct device *dev, 
+						const struct sensor_value *val, enum sensor_attribute chan)
+{
+	/* NOTE: Gyro must be disabled before updating values (page 53 in the datasheet) */
+
+	int ret;
+	struct sensor_value modeval = {1, 0};
+	ret = bosch_bmi323_driver_api_get_gyro_feature_mask(dev, &modeval);
+	if (ret < 0) {
+		return ret;
+	} else if (modeval.val1 != 0) {
+		return -EINVAL;
+	}
+
+	uint16_t regval;	
+	/* Sensor value is interpreted as gain factor (1.0 ± 0.125 as speficifed in datasheet) */
+	int64_t g_minus_1_ppm = ((int64_t)val->val1 - 1LL) * 1000000LL + (int64_t)val->val2;
+	int64_t g_percent = g_minus_1_ppm / 10000LL;
+
+	/** Convert percentage to register value
+     * Register range: -63 to +63 covers -12.5% to +12.5%
+     * 1 LSB = 12.5% / 63
+     * percent * 63 / 12.5 = percent * 630 / 125 = percent * 126 / 25
+	 * Use half divisor 25/2 = 12.5 (rounded to 13) for rounding to nearest.
+     */
+	int64_t gain64;
+    if (g_percent >= 0) {
+        gain64 = (g_percent * 126LL + 13LL) / 25LL;
+    } else {
+        gain64 = (g_percent * 126LL - 13LL) / 25LL;
+    }
+    
+    if (gain64 > 63 || gain64 < -63) {
+        return -EINVAL;
+    }
+	int16_t gain16 = (int16_t)gain64;
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_DP_DGAIN_X, GYR_DP_DGAIN_X);
+		regval |= ((uint16_t)(gain16 & 0x007F)) << IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_X_GYR_DP_DGAIN_X_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_X, &regval, 1);
+		break;
+
+	case SENSOR_CHAN_GYRO_Y:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_DP_DGAIN_Y, GYR_DP_DGAIN_Y);
+		regval |= ((uint16_t)(gain16 & 0x007F)) << IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Y_GYR_DP_DGAIN_Y_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Y, &regval, 1);
+		break;
+
+	case SENSOR_CHAN_GYRO_Z:
+		regval &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_DP_DGAIN_Z, GYR_DP_DGAIN_Z);
+		regval |= ((uint16_t)(gain16 & 0x007F)) << IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Z_GYR_DP_DGAIN_Z_OFFSET;
+		ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Z, &regval, 1);
+		break;
+
+	default:
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
 static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 {
 	/* Page 53-55 in the datasheet */
 	int16_t buf;
 	int ret;
 
-	/* Do neccesary checks */
-
-	/* Check for ongoing self-calibration or self-test */
+	/* Check for ongoing self-calibration, self-test or error-mode */
 	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_FEATURE_IO1, &buf, 1);
 	if (ret < 0) {
 		return ret;
 	}
-	if (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE)) {
-		LOG_WRN("Self-calibration not initiated due to ongoing self-calibration.");
+	if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+			!= IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, IDLE) ) {
+		LOG_WRN("Self-calibration not initiated due to ongoing self-calibration, self-test or error-mode");
 		return -EAGAIN;
 	}
 
-	/* High performance mode is required */
-	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &buf, 1);
+	/* Enforce default self-calibration configuration */
+	uint16_t conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_SC_SELECT, &conf, 1);
 	if (ret < 0) {
 		return ret;
 	}
-	if ( (buf & IMU_BOSCH_BMI323_REG_MASK(GYRO_CONF, MODE)) 
-			!= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, MODE, HPWR)) {
-		struct sensor_value hpwr_val = {1, 0};
-		bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &hpwr_val);
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_SC_SELECT, SENS_EN);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(GYR_SC_SELECT, SENS_EN, EN);
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_SC_SELECT, OFFS_EN);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(GYR_SC_SELECT, OFFS_EN, EN);
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_SC_SELECT, APPLY_CORR);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(GYR_SC_SELECT, APPLY_CORR, EN);
+
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_SC_SELECT, &conf, 1);
+	if (ret < 0) {
+		return ret;
 	}
 
+	/* The accelerometer is required to be enabled (already) in high performance mode */
 	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &buf, 1);
 	if (ret < 0) {
 		return ret;
@@ -478,8 +812,33 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 		bosch_bmi323_driver_api_set_acc_feature_mask(dev, &hpwr_val);
 	}
 
+	/** Sample rate of acc is preferred in the range of 25 Hz up to 200 Hz.
+	 * A warning is given if acc_odr is not in the range, but self-calibration still proceeds.
+	*/
+	struct sensor_value odr = {0, 0};
+	ret = bosch_bmi323_driver_api_get_acc_odr(dev, &odr);
+	if (ret < 0) {
+		return ret;
+	}
+	if (odr.val1 < 25 || odr.val1 > 200) {
+		LOG_WRN("Sample rate of acc is not in the preferred range of 25 Hz up to 200 Hz."
+				"Self-calibration still proceeds."
+		);
+	}
+
 	/* Disable alternative sensor configurations */
-	uint16_t conf;
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ALT_ACC_CONF, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(ALT_ACC_CONF, ALT_ACC_MODE);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(ALT_ACC_CONF, ALT_ACC_MODE, DIS);
+	
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ALT_ACC_CONF, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
 
 	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ALT_GYR_CONF, &conf, 1);
 	if (ret < 0) {
@@ -494,15 +853,46 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 		return ret;
 	}
 
-	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ALT_GYR_CONF, &conf, 1);
+
+	/** Gyroscope user offset and user sensitivity error registers must be cleared out before each self-calibration execution. 
+	 * It is strongly recommended to update the registers only when the sensors are disabled to avoid settling
+	 * of the respective signal, that means either accelerometer or gyroscope, after the values are updated.
+	 * */
+	struct sensor_value modeval = {0, 0};
+	struct sensor_value sensor_val_zero = {0, 0};
+
+	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &modeval);
 	if (ret < 0) {
 		return ret;
 	}
 
-	conf &= ~IMU_BOSCH_BMI323_REG_MASK(ALT_GYR_CONF, ALT_GYR_MODE);
-	conf |= IMU_BOSCH_BMI323_REG_VALUE(ALT_GYR_CONF, ALT_GYR_MODE, DIS);
-	
-	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ALT_GYR_CONF, &conf, 1);
+	ret = bosch_bmi323_driver_api_set_gyro_offset(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_X);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_offset(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Y);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_offset(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Z);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_X);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Y);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Z);
+	if (ret < 0) {
+		return ret;
+	}
+	/* Set gyro to high performance mode */
+	modeval.val1 = 1;
+	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &modeval);
 	if (ret < 0) {
 		return ret;
 	}
@@ -518,7 +908,7 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 
 	/* The duration of the self-calibration for standard settings is approximately 350 ms for the 
 	measurement of the re-scaling for the angular rate and 80 ms for the gyroscope offset measurement. */
-	k_msleep(430);
+	k_msleep(IMU_BOSCH_BMI323_SC_TIMEOUT_MS);
 
 	/* To avoid reliance on interrupts, we can poll FEATURE_IO1 */
 	for (int i = 0; i < 11; i++){
@@ -558,9 +948,11 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 				);
 			return -EINVAL;
 		} 
-		else if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
-					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO)){
-			k_msleep(10);
+		else if ( 	( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
+						== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO) )
+				 || ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+						== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) )   ){
+			k_msleep(IMU_BOSCH_BMI323_SC_POLL_MS);
 		} else { 
 			break;
 		}
@@ -585,6 +977,46 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	switch (chan) {
+
+	case SENSOR_CHAN_ACCEL_X:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_set_acc_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_set_acc_gain(dev, val, chan);
+
+			break;
+		}
+
+	case SENSOR_CHAN_ACCEL_Y:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_set_acc_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_set_acc_gain(dev, val, chan);
+
+			break;
+		}
+	
+	case SENSOR_CHAN_ACCEL_Z:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_set_acc_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_set_acc_gain(dev, val, chan);
+
+			break;
+		}
+
 	case SENSOR_CHAN_ACCEL_XYZ:
 		switch (attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
@@ -609,6 +1041,45 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 		}
 
 		break;
+	
+	case SENSOR_CHAN_GYRO_X:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_set_gyro_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_set_gyro_gain(dev, val, chan);
+
+			break;
+		}
+	
+	case SENSOR_CHAN_GYRO_Y:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_set_gyro_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_set_gyro_gain(dev, val, chan);
+
+			break;
+		}
+
+	case SENSOR_CHAN_GYRO_Z:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_set_gyro_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_set_gyro_gain(dev, val, chan);
+
+			break;
+		}
 
 	case SENSOR_CHAN_GYRO_XYZ:
 		switch (attr) {
