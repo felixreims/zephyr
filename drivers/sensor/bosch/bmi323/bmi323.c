@@ -285,7 +285,6 @@ static int bosch_bmi323_driver_api_set_acc_bandwidth(const struct device *dev,
 static int bosch_bmi323_driver_api_set_acc_avg_num(const struct device *dev,
 						       const struct sensor_value *val)
 {
-	struct bosch_bmi323_data *data = (struct bosch_bmi323_data *)dev->data;
 	int ret;
 	uint16_t acc_conf;
 
@@ -339,6 +338,10 @@ static int bosch_bmi323_driver_api_set_acc_feature_mask(const struct device *dev
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
 }
 
+/* Needs to be declared before set_acc_offset and set_acc_gain */
+static int bosch_bmi323_driver_api_get_acc_feature_mask(const struct device *dev,
+							struct sensor_value *val);
+
 static int bosch_bmi323_driver_api_set_acc_offset(const struct device *dev, 
 						const struct sensor_value *val, enum sensor_attribute chan)
 {
@@ -371,6 +374,7 @@ static int bosch_bmi323_driver_api_set_acc_offset(const struct device *dev,
     }
 	/* The value is 14 bits signed */
 	if (offs64 > 8191 || offs64 < -8192) {
+		LOG_WRN("Offset value out of range");
 		return -EINVAL;
 	}
 	offs16 = (int16_t)offs64;
@@ -451,6 +455,7 @@ static int bosch_bmi323_driver_api_set_acc_gain(const struct device *dev,
     }
     
     if (gain64 > 127 || gain64 < -127) {
+		LOG_WRN("Gain value out of range");
         return -EINVAL;
     }
 	int16_t gain16 = (int16_t)gain64;
@@ -606,7 +611,6 @@ static int bosch_bmi323_driver_api_set_gyro_bandwidth(const struct device *dev,
 static int bosch_bmi323_driver_api_set_gyro_avg_num(const struct device *dev,
 						       const struct sensor_value *val)
 {
-	struct bosch_bmi323_data *data = (struct bosch_bmi323_data *)dev->data;
 	int ret;
 	uint16_t gyro_conf;
 
@@ -660,6 +664,11 @@ static int bosch_bmi323_driver_api_set_gyro_feature_mask(const struct device *de
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
 }
 
+/* Needs to be declared before set_gyro_offset and set_gyro_gain */
+
+static int bosch_bmi323_driver_api_get_gyro_feature_mask(const struct device *dev,
+							 struct sensor_value *val);
+
 static int bosch_bmi323_driver_api_set_gyro_offset(const struct device *dev, 
 						const struct sensor_value *val, enum sensor_attribute chan)
 {
@@ -694,6 +703,7 @@ static int bosch_bmi323_driver_api_set_gyro_offset(const struct device *dev,
     }
 	/* The value is 10 bits signed */
 	if (offs64 > 511 || offs64 < -512) {
+		LOG_WRN("Offset value out of range");
 		return -EINVAL;
 	}
 	offs16 = (int16_t)offs64;
@@ -775,6 +785,7 @@ static int bosch_bmi323_driver_api_set_gyro_gain(const struct device *dev,
 
     /* The value is 7 bits signed */
     if (gain64 > 63 || gain64 < -63) {
+		LOG_WRN("Gain value out of range");
         return -EINVAL;
     }
 	int16_t gain16 = (int16_t)gain64;
@@ -821,6 +832,9 @@ static int bosch_bmi323_driver_api_set_gyro_gain(const struct device *dev,
 
 	return ret;
 }
+
+/* get_acc_odr must be declared before gyro_self_calibration */
+static int bosch_bmi323_driver_api_get_acc_odr(const struct device *dev, struct sensor_value *val);
 
 static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 {
@@ -1049,6 +1063,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_set_acc_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1064,6 +1083,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_set_acc_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1077,6 +1101,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 		
 		case SENSOR_ATTR_GAIN:
 			ret = bosch_bmi323_driver_api_set_acc_gain(dev, val, chan);
+
+			break;
+		
+		default:
+			ret = -ENODEV;
 
 			break;
 		}
@@ -1129,6 +1158,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_set_gyro_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1144,6 +1178,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_set_gyro_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1157,6 +1196,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 		
 		case SENSOR_ATTR_GAIN:
 			ret = bosch_bmi323_driver_api_set_gyro_gain(dev, val, chan);
+
+			break;
+		
+		default:
+			ret = -ENODEV;
 
 			break;
 		}
@@ -1875,6 +1919,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_get_acc_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1890,6 +1939,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_get_acc_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1903,6 +1957,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 		
 		case SENSOR_ATTR_GAIN:
 			ret = bosch_bmi323_driver_api_get_acc_gain(dev, val, chan);
+
+			break;
+		
+		default:
+			ret = -ENODEV;
 
 			break;
 		}
@@ -1955,6 +2014,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_get_gyro_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1970,6 +2034,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 			ret = bosch_bmi323_driver_api_get_gyro_gain(dev, val, chan);
 
 			break;
+		
+		default:
+			ret = -ENODEV;
+
+			break;
 		}
 
 		break;
@@ -1983,6 +2052,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 		
 		case SENSOR_ATTR_GAIN:
 			ret = bosch_bmi323_driver_api_get_gyro_gain(dev, val, chan);
+
+			break;
+		
+		default:
+			ret = -ENODEV;
 
 			break;
 		}
