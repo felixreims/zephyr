@@ -523,7 +523,7 @@ static int bosch_bmi323_driver_api_set_gyro_full_scale(const struct device *dev,
 static int bosch_bmi323_driver_api_set_gyro_bandwidth(const struct device *dev,
 							 const struct sensor_value *val)
 {
-
+	/* BMI323 has only 2 options for the -3dB cut-off frequency: ODR/2 (sensor_value: {0,0}) and ODR/4 (sensor_value: {1,0}) */
 	int ret;
 	uint16_t gyro_conf;
 
@@ -713,7 +713,8 @@ static int bosch_bmi323_driver_api_set_gyro_gain(const struct device *dev,
     } else {
         gain64 = (g_percent * 126LL - 13LL) / 25LL;
     }
-    
+
+    /* The value is 7 bits signed */
     if (gain64 > 63 || gain64 < -63) {
         return -EINVAL;
     }
@@ -991,6 +992,8 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 			break;
 		}
 
+		break;
+
 	case SENSOR_CHAN_ACCEL_Y:
 		switch (attr) {
 		case SENSOR_ATTR_OFFSET:
@@ -1003,6 +1006,8 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 			break;
 		}
+
+		break;
 	
 	case SENSOR_CHAN_ACCEL_Z:
 		switch (attr) {
@@ -1016,6 +1021,8 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 			break;
 		}
+
+		break;
 
 	case SENSOR_CHAN_ACCEL_XYZ:
 		switch (attr) {
@@ -1054,6 +1061,8 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 			break;
 		}
+
+		break;
 	
 	case SENSOR_CHAN_GYRO_Y:
 		switch (attr) {
@@ -1068,6 +1077,8 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 			break;
 		}
 
+		break;
+
 	case SENSOR_CHAN_GYRO_Z:
 		switch (attr) {
 		case SENSOR_ATTR_OFFSET:
@@ -1080,6 +1091,8 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 			break;
 		}
+
+		break;
 
 	case SENSOR_CHAN_GYRO_XYZ:
 		switch (attr) {
@@ -1113,8 +1126,6 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 			break;
 		
-		
-
 		default:
 			ret = -ENODEV;
 
@@ -1268,6 +1279,118 @@ static int bosch_bmi323_driver_api_get_acc_feature_mask(const struct device *dev
 	return 0;
 }
 
+static int bosch_bmi323_driver_api_get_acc_offset(const struct device *dev, 
+						struct sensor_value *val, enum sensor_attribute chan)
+{
+	int ret;
+	uint16_t regval;
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_OFF_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	int16_t raw_uGs;
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		raw_uGs = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_OFF_X, ACC_DP_OFF_X);
+		break;
+	case SENSOR_CHAN_ACCEL_Y:
+		raw_uGs = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_OFF_Y, ACC_DP_OFF_Y);
+		break;
+	case SENSOR_CHAN_ACCEL_Z:
+		raw_uGs = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_OFF_Z, ACC_DP_OFF_Z);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	/* Sign extend 14-bit */
+	if (raw_uGs & BIT(13)) {
+		raw_uGs |= ~BIT_MASK(14);
+	}
+
+	/* 1 LSB = 30.52uG, and we want to output G. */
+	int64_t uGs = (int64_t)raw_uGs * 763LL / 25LL; // *30.52
+
+	int32_t int_part = (int32_t)(uGs / 1000000);
+	int32_t frac_part = (int32_t)(uGs % 1000000);
+
+	val->val1 = int_part;
+	val->val2 = frac_part;
+
+	return 0;
+}
+
+static int bosch_bmi323_driver_api_get_acc_gain(const struct device *dev, 
+						struct sensor_value *val, enum sensor_attribute chan)
+{
+	int ret;
+	uint16_t regval;
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_ACCEL_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_DP_DGAIN_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	int16_t raw_p;
+
+	switch (chan) {
+	case SENSOR_CHAN_ACCEL_X:
+		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_DGAIN_X, ACC_DP_DGAIN_X);
+		break;
+	case SENSOR_CHAN_ACCEL_Y:
+		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_DGAIN_Y, ACC_DP_DGAIN_Y);
+		break;
+	case SENSOR_CHAN_ACCEL_Z:
+		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_DGAIN_Z, ACC_DP_DGAIN_Z);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	/* Sign extend 8-bit */
+	if (raw_p & BIT(7)) {
+		raw_p |= ~BIT_MASK(8);
+	}
+
+	/* raw_p * 0.03125 / 127 * 1000000 (LSB = 3.125% / 127) to get the actual gain times 1e6 */
+	int64_t gain = 1000000LL + (raw_p * 3125LL) / 127LL;
+
+	int32_t int_part = (int32_t)(gain / 1000000);
+	int32_t frac_part = (int32_t)(gain % 1000000);
+
+	val->val1 = int_part;
+	val->val2 = frac_part;
+
+	return 0;
+}
+
 static int bosch_bmi323_driver_api_get_gyro_odr(const struct device *dev, struct sensor_value *val)
 {
 	uint16_t gyro_conf;
@@ -1383,6 +1506,78 @@ static int bosch_bmi323_driver_api_get_gyro_full_scale(const struct device *dev,
 	return 0;
 }
 
+static int bosch_bmi323_driver_api_get_gyro_bandwidth(const struct device *dev,
+							 struct sensor_value *val)
+{
+	/* BMI323 has only 2 options for the -3dB cut-off frequency: ODR/2 (sensor_value: {0,0}) and ODR/4 (sensor_value: {1,0}) */
+	uint16_t gyro_conf;
+	int ret;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(gyro_conf, GYRO_CONF, BANDWIDTH)) {
+		val->val1 = 1;
+		val->val2 = 0;
+	} else {
+		val->val1 = 0;
+		val->val2 = 0;
+	}
+
+	return 0;
+}
+
+static int bosch_bmi323_driver_api_get_gyro_avg_num(const struct device *dev,
+							 struct sensor_value *val)
+{
+	uint16_t gyro_conf;
+	int ret;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(gyro_conf, GYRO_CONF, AVG_NUM)) {
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S0):
+		val->val1 = 0;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S2):
+		val->val1 = 2;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S4):
+		val->val1 = 4;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S8):
+		val->val1 = 8;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S16):
+		val->val1 = 16;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S32):
+		val->val1 = 32;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S64):
+		val->val1 = 64;
+		val->val2 = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int bosch_bmi323_driver_api_get_gyro_feature_mask(const struct device *dev,
 							 struct sensor_value *val)
 {
@@ -1406,6 +1601,118 @@ static int bosch_bmi323_driver_api_get_gyro_feature_mask(const struct device *de
 	return 0;
 }
 
+static int bosch_bmi323_driver_api_get_gyro_offset(const struct device *dev, 
+						struct sensor_value *val, enum sensor_attribute chan)
+{
+	int ret;
+	uint16_t regval;
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_OFF_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	int16_t raw_w;
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		raw_w = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, GYR_DP_OFF_X, GYR_DP_OFF_X);
+		break;
+	case SENSOR_CHAN_GYRO_Y:
+		raw_w = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, GYR_DP_OFF_Y, GYR_DP_OFF_Y);
+		break;
+	case SENSOR_CHAN_GYRO_Z:
+		raw_w = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, GYR_DP_OFF_Z, GYR_DP_OFF_Z);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	/* Sign extend 10-bit */
+	if (raw_w & BIT(9)) {
+		raw_w |= ~BIT_MASK(10);
+	}
+
+	/* 1 LSB = 0.061 deg/s. Multiply by 1e6. 0.061 * 1e6 = 61e3 */
+	int64_t w = (int64_t)raw_w * 61000LL; 
+
+	int32_t int_part = (int32_t)(w / 1000000);
+	int32_t frac_part = (int32_t)(w % 1000000);
+
+	val->val1 = int_part;
+	val->val2 = frac_part;
+
+	return 0;
+}
+
+static int bosch_bmi323_driver_api_get_gyro_gain(const struct device *dev, 
+						struct sensor_value *val, enum sensor_attribute chan)
+{
+	int ret;
+	uint16_t regval;
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_X, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Y:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Y, &regval, 1);
+		break;
+	case SENSOR_CHAN_GYRO_Z:
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_DP_DGAIN_Z, &regval, 1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	if (ret < 0) {
+		return ret;
+	}
+
+	int16_t raw_p;
+
+	switch (chan) {
+	case SENSOR_CHAN_GYRO_X:
+		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, GYR_DP_DGAIN_X, GYR_DP_DGAIN_X);
+		break;
+	case SENSOR_CHAN_GYRO_Y:
+		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, GYR_DP_DGAIN_Y, GYR_DP_DGAIN_Y);
+		break;
+	case SENSOR_CHAN_GYRO_Z:
+		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, GYR_DP_DGAIN_Z, GYR_DP_DGAIN_Z);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	/* Sign extend 7-bit */
+	if (raw_p & BIT(6)) {
+		raw_p |= ~BIT_MASK(7);
+	}
+
+	/* raw_p * 0.125 / 63 * 1000000 (LSB = 12.5% / 63) to get the actual gain times 1e6 */
+	int64_t gain = 1000000LL + (raw_p * 125000LL) / 63LL;
+
+	int32_t int_part = (int32_t)(gain / 1000000);
+	int32_t frac_part = (int32_t)(gain % 1000000);
+
+	val->val1 = int_part;
+	val->val2 = frac_part;
+
+	return 0;
+}
+
 static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum sensor_channel chan,
 					    enum sensor_attribute attr, struct sensor_value *val)
 {
@@ -1415,6 +1722,52 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 	k_mutex_lock(&data->lock, K_FOREVER);
 
 	switch (chan) {
+
+	case SENSOR_CHAN_ACCEL_X:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_get_acc_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_get_acc_gain(dev, val, chan);
+
+			break;
+		}
+
+		break;
+
+	case SENSOR_CHAN_ACCEL_Y:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_get_acc_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_get_acc_gain(dev, val, chan);
+
+			break;
+		}
+
+		break;
+	
+	case SENSOR_CHAN_ACCEL_Z:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_get_acc_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_get_acc_gain(dev, val, chan);
+
+			break;
+		}
+
+		break;
+
 	case SENSOR_CHAN_ACCEL_XYZ:
 		switch (attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
@@ -1440,6 +1793,51 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 		break;
 
+	case SENSOR_CHAN_GYRO_X:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_get_gyro_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_get_gyro_gain(dev, val, chan);
+
+			break;
+		}
+
+		break;
+	
+	case SENSOR_CHAN_GYRO_Y:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_get_gyro_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_get_gyro_gain(dev, val, chan);
+
+			break;
+		}
+
+		break;
+
+	case SENSOR_CHAN_GYRO_Z:
+		switch (attr) {
+		case SENSOR_ATTR_OFFSET:
+			ret = bosch_bmi323_driver_api_get_gyro_offset(dev, val, chan);
+
+			break;
+		
+		case SENSOR_ATTR_GAIN:
+			ret = bosch_bmi323_driver_api_get_gyro_gain(dev, val, chan);
+
+			break;
+		}
+
+		break;
+
 	case SENSOR_CHAN_GYRO_XYZ:
 		switch (attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
@@ -1449,6 +1847,16 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_FULL_SCALE:
 			ret = bosch_bmi323_driver_api_get_gyro_full_scale(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_RESOLUTION:
+			ret = bosch_bmi323_driver_api_get_gyro_avg_num(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_LOWER_THRESH:
+			ret = bosch_bmi323_driver_api_get_gyro_bandwidth(dev, val);
 
 			break;
 
