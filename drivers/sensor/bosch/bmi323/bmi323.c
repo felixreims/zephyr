@@ -25,8 +25,9 @@ LOG_MODULE_REGISTER(bosch_bmi323);
 #define IMU_BOSCH_DIE_TEMP_OFFSET_MICRO_DEG_CELSIUS (23000000LL)
 #define IMU_BOSCH_DIE_TEMP_MICRO_DEG_CELSIUS_LSB    (1953L)
 
-#define IMU_BOSCH_BMI323_SC_TIMEOUT_MS 430
-#define IMU_BOSCH_BMI323_SC_POLL_MS     10
+#define IMU_BOSCH_BMI323_SC_TIMEOUT_MS 		430
+#define IMU_BOSCH_BMI323_SC_POLL_MS     	10
+#define IMU_BOSCH_BMI323_SC_POLL_ATTEMPTS	10 
 
 typedef void (*bosch_bmi323_gpio_callback_ptr)(const struct device *dev, struct gpio_callback *cb,
 					       uint32_t pins);
@@ -253,6 +254,64 @@ static int bosch_bmi323_driver_api_set_acc_full_scale(const struct device *dev,
 	}
 
 	data->acc_full_scale = 0;
+
+	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+}
+
+static int bosch_bmi323_driver_api_set_acc_bandwidth(const struct device *dev,
+							 const struct sensor_value *val)
+{
+	/* BMI323 has only 2 options for the -3dB cut-off frequency: ODR/2 (sensor_value: {0,0}) and ODR/4 (sensor_value: {1,0}) */
+	int ret;
+	uint16_t acc_conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	acc_conf &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_CONF, BANDWIDTH);
+
+	if (val->val1) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, BANDWIDTH, ODR_4);
+	} else {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, BANDWIDTH, ODR_2);
+	}
+
+	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+}
+
+static int bosch_bmi323_driver_api_set_acc_avg_num(const struct device *dev,
+						       const struct sensor_value *val)
+{
+	struct bosch_bmi323_data *data = (struct bosch_bmi323_data *)dev->data;
+	int ret;
+	uint16_t acc_conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	acc_conf &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_CONF, AVG_NUM);
+
+	if (val->val1 <= 0) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S0);
+	} else if (val->val1 <= 2) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S2);
+	} else if (val->val1 <= 4) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S4);
+	} else if (val->val1 <= 8) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S8);
+	} else if (val->val1 <= 16) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S16);
+	} else if (val->val1 <= 32) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S32);
+	} else {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S64);
+	}
 
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
 }
@@ -912,7 +971,7 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	k_msleep(IMU_BOSCH_BMI323_SC_TIMEOUT_MS);
 
 	/* To avoid reliance on interrupts, we can poll FEATURE_IO1 */
-	for (int i = 0; i < 11; i++){
+	for (int i = 0; i <= IMU_BOSCH_BMI323_SC_POLL_ATTEMPTS; i++){
 		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_FEATURE_IO1, &buf, 1);
 		if (ret < 0) {
 			return ret;
@@ -1033,6 +1092,16 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_FULL_SCALE:
 			ret = bosch_bmi323_driver_api_set_acc_full_scale(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_RESOLUTION:
+			ret = bosch_bmi323_driver_api_set_acc_avg_num(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_LOWER_THRESH:
+			ret = bosch_bmi323_driver_api_set_acc_bandwidth(dev, val);
 
 			break;
 
@@ -1247,6 +1316,78 @@ static int bosch_bmi323_driver_api_get_acc_full_scale(const struct device *dev,
 		break;
 	case IMU_BOSCH_BMI323_REG_ACC_CONF_RANGE_VAL_G16:
 		val->val1 = 16;
+		val->val2 = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int bosch_bmi323_driver_api_get_acc_bandwidth(const struct device *dev,
+							 struct sensor_value *val)
+{
+	/* BMI323 has only 2 options for the -3dB cut-off frequency: ODR/2 (sensor_value: {0,0}) and ODR/4 (sensor_value: {1,0}) */
+	uint16_t acc_conf;
+	int ret;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(acc_conf, ACC_CONF, BANDWIDTH)) {
+		val->val1 = 1;
+		val->val2 = 0;
+	} else {
+		val->val1 = 0;
+		val->val2 = 0;
+	}
+
+	return 0;
+}
+
+static int bosch_bmi323_driver_api_get_acc_avg_num(const struct device *dev,
+							 struct sensor_value *val)
+{
+	uint16_t acc_conf;
+	int ret;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(acc_conf, ACC_CONF, AVG_NUM)) {
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S0):
+		val->val1 = 0;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S2):
+		val->val1 = 2;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S4):
+		val->val1 = 4;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S8):
+		val->val1 = 8;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S16):
+		val->val1 = 16;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S32):
+		val->val1 = 32;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S64):
+		val->val1 = 64;
 		val->val2 = 0;
 		break;
 	default:
@@ -1777,6 +1918,16 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_FULL_SCALE:
 			ret = bosch_bmi323_driver_api_get_acc_full_scale(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_RESOLUTION:
+			ret = bosch_bmi323_driver_api_get_acc_avg_num(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_LOWER_THRESH:
+			ret = bosch_bmi323_driver_api_get_acc_bandwidth(dev, val);
 
 			break;
 
