@@ -358,6 +358,7 @@ static int bosch_bmi323_driver_api_set_acc_offset(const struct device *dev,
 
 	uint16_t regval;
 	int16_t offs16;
+
 	/* Sensor value is interpreted as Gs, IMU needs uG */
 	int64_t ug = (int64_t)val->val1 * 1000000LL + (int64_t)val->val2;
 
@@ -374,7 +375,7 @@ static int bosch_bmi323_driver_api_set_acc_offset(const struct device *dev,
     }
 	/* The value is 14 bits signed */
 	if (offs64 > 8191 || offs64 < -8192) {
-		LOG_WRN("Offset value out of range");
+		LOG_WRN("Accel offset value out of range");
 		return -EINVAL;
 	}
 	offs16 = (int16_t)offs64;
@@ -436,29 +437,31 @@ static int bosch_bmi323_driver_api_set_acc_gain(const struct device *dev,
 		return -EINVAL;
 	}
 
-	uint16_t regval;	
 	/* Sensor value is interpreted as gain factor (1.0 ± 0.03125 as speficifed in datasheet) */
-	int64_t g_minus_1_ppm = ((int64_t)val->val1 - 1LL) * 1000000LL + (int64_t)val->val2;
-	int64_t g_percent = g_minus_1_ppm / 10000LL;
+	int64_t g_minus_1_ppm = ((int64_t)val->val1 - 1) * 1000000LL + val->val2;
 
 	/** Convert percentage to register value
      * Register range: -127 to +127 covers -3.125% to +3.125%
      * 1 LSB = 3.125% / 127
-     * percent * 127 / 3.125 = percent * 127000 / 3125 = percent * 1016 / 25
-	 * Use half divisor 25/2 = 12.5 (rounded to 13) for rounding to nearest.
+     * percent * 127 / 3.125, and divide by 1e4 to go from ppm-gain to percentage
+	 * Use half divisor 31250/2 = 15625 for rounding to nearest.
      */
+	
 	int64_t gain64;
-    if (g_percent >= 0) {
-        gain64 = (g_percent * 1016LL + 13LL) / 25LL;
+    if (g_minus_1_ppm >= 0) {
+        gain64 = (g_minus_1_ppm * 127LL + 15625LL) / 31250LL;
     } else {
-        gain64 = (g_percent * 1016LL - 13LL) / 25LL;
+        gain64 = (g_minus_1_ppm * 127LL - 15625LL) / 31250LL;
     }
     
+	/* The value is 8 bits signed */
     if (gain64 > 127 || gain64 < -127) {
-		LOG_WRN("Gain value out of range");
+		LOG_WRN("Accel gain value out of range");
         return -EINVAL;
     }
 	int16_t gain16 = (int16_t)gain64;
+
+	uint16_t regval;
 
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_X:
@@ -692,7 +695,7 @@ static int bosch_bmi323_driver_api_set_gyro_offset(const struct device *dev,
 	/** Convert deg/s to register value
 	 * w is in micro-deg/s
 	 * 1 LSB = 0.061 deg/s = 61 000 micro-deg/s
-	 * => offset_LSB = w / 61000
+	 * offset_LSB = w / 61000
 	 * Use half-divisor 61000/2 = 30500 for rounding to nearest.
 	 * */
 	int64_t offs64;
@@ -703,7 +706,7 @@ static int bosch_bmi323_driver_api_set_gyro_offset(const struct device *dev,
     }
 	/* The value is 10 bits signed */
 	if (offs64 > 511 || offs64 < -512) {
-		LOG_WRN("Offset value out of range");
+		LOG_WRN("Gyro offset value out of range");
 		return -EINVAL;
 	}
 	offs16 = (int16_t)offs64;
@@ -764,31 +767,32 @@ static int bosch_bmi323_driver_api_set_gyro_gain(const struct device *dev,
 	} else if (modeval.val1 != 0) {
 		return -EINVAL;
 	}
-
-	uint16_t regval;	
+	
 	/* Sensor value is interpreted as gain factor (1.0 ± 0.125 as speficifed in datasheet) */
-	int64_t g_minus_1_ppm = ((int64_t)val->val1 - 1LL) * 1000000LL + (int64_t)val->val2;
-	int64_t g_percent = g_minus_1_ppm / 10000LL;
+	int64_t g_minus_1_ppm = ((int64_t)val->val1 - 1) * 1000000LL + val->val2;
 
 	/** Convert percentage to register value
      * Register range: -63 to +63 covers -12.5% to +12.5%
      * 1 LSB = 12.5% / 63
-     * percent * 63 / 12.5 = percent * 630 / 125 = percent * 126 / 25
-	 * Use half divisor 25/2 = 12.5 (rounded to 13) for rounding to nearest.
-     */
+     * percent * 63 / 12.5, and divide by 1e4 to go from ppm-gain to percentage
+	 * Use half divisor 125000/2 = 62500 for rounding to nearest.
+	 * */
+	
 	int64_t gain64;
-    if (g_percent >= 0) {
-        gain64 = (g_percent * 126LL + 13LL) / 25LL;
-    } else {
-        gain64 = (g_percent * 126LL - 13LL) / 25LL;
-    }
+	if (g_minus_1_ppm >= 0){
+		gain64 = (g_minus_1_ppm * 63LL + 62500LL) / 125000LL;
+	} else {
+		gain64 = (g_minus_1_ppm * 63LL - 62500LL) / 125000LL;
+	}
 
     /* The value is 7 bits signed */
     if (gain64 > 63 || gain64 < -63) {
-		LOG_WRN("Gain value out of range");
+		LOG_WRN("Gyro gain value out of range");
         return -EINVAL;
     }
 	int16_t gain16 = (int16_t)gain64;
+
+	uint16_t regval;
 
 	switch (chan) {
 	case SENSOR_CHAN_GYRO_X:
@@ -883,7 +887,10 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	if ( (buf & IMU_BOSCH_BMI323_REG_MASK(ACC_CONF, MODE)) 
 			!= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, MODE, HPWR)) {
 		struct sensor_value hpwr_val = {1, 0};
-		bosch_bmi323_driver_api_set_acc_feature_mask(dev, &hpwr_val);
+		ret = bosch_bmi323_driver_api_set_acc_feature_mask(dev, &hpwr_val);
+		if (ret < 0) {
+			return ret;
+		}
 	}
 
 	/** Sample rate of acc is preferred in the range of 25 Hz up to 200 Hz.
@@ -932,11 +939,12 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	 * It is strongly recommended to update the registers only when the sensors are disabled to avoid settling
 	 * of the respective signal, that means either accelerometer or gyroscope, after the values are updated.
 	 * */
-	struct sensor_value modeval = {0, 0};
 	struct sensor_value sensor_val_zero = {0, 0};
+	struct sensor_value sensor_val_one = {1, 0};
 
-	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &modeval);
+	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &sensor_val_zero);
 	if (ret < 0) {
+		LOG_WRN("Could not disable gyro during self-calibration setup.");
 		return ret;
 	}
 
@@ -952,22 +960,22 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	if (ret < 0) {
 		return ret;
 	}
-	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_X);
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_one, SENSOR_CHAN_GYRO_X);
 	if (ret < 0) {
 		return ret;
 	}
-	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Y);
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_one, SENSOR_CHAN_GYRO_Y);
 	if (ret < 0) {
 		return ret;
 	}
-	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Z);
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_one, SENSOR_CHAN_GYRO_Z);
 	if (ret < 0) {
 		return ret;
 	}
 	/* Set gyro to high performance mode */
-	modeval.val1 = 1;
-	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &modeval);
+	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &sensor_val_one);
 	if (ret < 0) {
+		LOG_WRN("Could not enable gyro again before self-calibration.");
 		return ret;
 	}
 
@@ -1028,6 +1036,7 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 						== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) )   ){
 			k_msleep(IMU_BOSCH_BMI323_SC_POLL_MS);
 		} else { 
+			LOG_INF("Self-calibration finished.");
 			break;
 		}
 	}
@@ -1036,8 +1045,10 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, GYRO_SC_RESULT, NO)){
 		LOG_WRN("Self-calibration failed.");
 		return -EINVAL;
-		}
-	
+	} else {
+		LOG_INF("Self-calibration successful.");
+	}
+
 	return 0;
 }
 
@@ -1406,31 +1417,31 @@ static int bosch_bmi323_driver_api_get_acc_avg_num(const struct device *dev,
 	}
 
 	switch (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(acc_conf, ACC_CONF, AVG_NUM)) {
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S0):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S0:
 		val->val1 = 0;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S2):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S2:
 		val->val1 = 2;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S4):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S4:
 		val->val1 = 4;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S8):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S8:
 		val->val1 = 8;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S16):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S16:
 		val->val1 = 16;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S32):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S32:
 		val->val1 = 32;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S64):
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S64:
 		val->val1 = 64;
 		val->val2 = 0;
 		break;
@@ -1556,7 +1567,7 @@ static int bosch_bmi323_driver_api_get_acc_gain(const struct device *dev,
 		raw_p = IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(regval, ACC_DP_DGAIN_Z, ACC_DP_DGAIN_Z);
 		break;
 	default:
-		ret = -EINVAL;
+		return -EINVAL;
 	}
 
 	/* Sign extend 8-bit */
@@ -1565,7 +1576,7 @@ static int bosch_bmi323_driver_api_get_acc_gain(const struct device *dev,
 	}
 
 	/* raw_p * 0.03125 / 127 * 1000000 (LSB = 3.125% / 127) to get the actual gain times 1e6 */
-	int64_t gain = 1000000LL + (raw_p * 3125LL) / 127LL;
+	int64_t gain = 1000000LL + (raw_p * 31250LL) / 127LL;
 
 	int32_t int_part = (int32_t)(gain / 1000000);
 	int32_t frac_part = (int32_t)(gain % 1000000);
@@ -1728,31 +1739,31 @@ static int bosch_bmi323_driver_api_get_gyro_avg_num(const struct device *dev,
 	}
 
 	switch (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(gyro_conf, GYRO_CONF, AVG_NUM)) {
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S0):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S0:
 		val->val1 = 0;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S2):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S2:
 		val->val1 = 2;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S4):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S4:
 		val->val1 = 4;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S8):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S8:
 		val->val1 = 8;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S16):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S16:
 		val->val1 = 16;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S32):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S32:
 		val->val1 = 32;
 		val->val2 = 0;
 		break;
-	case IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S64):
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S64:
 		val->val1 = 64;
 		val->val2 = 0;
 		break;
