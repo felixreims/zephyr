@@ -25,9 +25,9 @@ LOG_MODULE_REGISTER(bosch_bmi323);
 #define IMU_BOSCH_DIE_TEMP_OFFSET_MICRO_DEG_CELSIUS (23000000LL)
 #define IMU_BOSCH_DIE_TEMP_MICRO_DEG_CELSIUS_LSB    (1953L)
 
-#define IMU_BOSCH_BMI323_SC_TIMEOUT_MS 		430
-#define IMU_BOSCH_BMI323_SC_POLL_MS     	10
-#define IMU_BOSCH_BMI323_SC_POLL_ATTEMPTS	10 
+#define IMU_BOSCH_BMI323_SC_TIMEOUT_MS 		250
+#define IMU_BOSCH_BMI323_SC_POLL_MS     	5
+#define IMU_BOSCH_BMI323_SC_POLL_ATTEMPTS	50
 
 typedef void (*bosch_bmi323_gpio_callback_ptr)(const struct device *dev, struct gpio_callback *cb,
 					       uint32_t pins);
@@ -880,17 +880,10 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	}
 
 	/* The accelerometer is required to be enabled (already) in high performance mode */
-	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &buf, 1);
+	struct sensor_value hpwr_val = {1, 0};
+	ret = bosch_bmi323_driver_api_set_acc_feature_mask(dev, &hpwr_val);
 	if (ret < 0) {
 		return ret;
-	}
-	if ( (buf & IMU_BOSCH_BMI323_REG_MASK(ACC_CONF, MODE)) 
-			!= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, MODE, HPWR)) {
-		struct sensor_value hpwr_val = {1, 0};
-		ret = bosch_bmi323_driver_api_set_acc_feature_mask(dev, &hpwr_val);
-		if (ret < 0) {
-			return ret;
-		}
 	}
 
 	/** Sample rate of acc is preferred in the range of 25 Hz up to 200 Hz.
@@ -972,6 +965,7 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 	if (ret < 0) {
 		return ret;
 	}
+	
 	/* Set gyro to high performance mode */
 	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &sensor_val_one);
 	if (ret < 0) {
@@ -988,8 +982,11 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 		return ret;
 	}
 
-	/* The duration of the self-calibration for standard settings is approximately 350 ms for the 
-	measurement of the re-scaling for the angular rate and 80 ms for the gyroscope offset measurement. */
+	/**
+	 * According to the datasheet, "The duration of the self-calibration for standard settings is approximately 350ms 
+	 * for the measurement of the re-scaling for the angular rate and 80ms for the gyroscope offset measurement."
+	 * Through experimentation, the actual time that SC took was around 275ms (slept 250ms + 5*5ms)
+	 */
 	k_msleep(IMU_BOSCH_BMI323_SC_TIMEOUT_MS);
 
 	/* To avoid reliance on interrupts, we can poll FEATURE_IO1 */
@@ -1029,24 +1026,38 @@ static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
 				" and self-test results may be inaccurate."
 				);
 			return -EINVAL;
-		} 
-		else if ( 	( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
-						== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO) )
-				 || ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
-						== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) )   ){
+		}
+		else if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) ){
 			k_msleep(IMU_BOSCH_BMI323_SC_POLL_MS);
-		} else { 
+		}
+		else if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO) ){
+			k_msleep(IMU_BOSCH_BMI323_SC_POLL_MS);
+		}
+		else { 
 			LOG_INF("Self-calibration finished.");
 			break;
 		}
 	}
 
+	if ( ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) )   ){
+		LOG_WRN("Self-calibration not finished.");
+		return -EINVAL;
+	}
+	else if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO) ){
+		LOG_WRN("Self-calibration not finished.");
+		return -EINVAL;
+	}
+
 	if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, GYRO_SC_RESULT))
-					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, GYRO_SC_RESULT, NO)){
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, GYRO_SC_RESULT, SUCC)){
+		LOG_INF("Self-calibration successful.");		
+	} else {
 		LOG_WRN("Self-calibration failed.");
 		return -EINVAL;
-	} else {
-		LOG_INF("Self-calibration successful.");
 	}
 
 	return 0;
