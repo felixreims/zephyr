@@ -25,6 +25,10 @@ LOG_MODULE_REGISTER(bosch_bmi323);
 #define IMU_BOSCH_DIE_TEMP_OFFSET_MICRO_DEG_CELSIUS (23000000LL)
 #define IMU_BOSCH_DIE_TEMP_MICRO_DEG_CELSIUS_LSB    (1953L)
 
+#define IMU_BOSCH_BMI323_SC_TIMEOUT_MS 		250
+#define IMU_BOSCH_BMI323_SC_POLL_MS     	5
+#define IMU_BOSCH_BMI323_SC_POLL_ATTEMPTS	50
+
 typedef void (*bosch_bmi323_gpio_callback_ptr)(const struct device *dev, struct gpio_callback *cb,
 					       uint32_t pins);
 
@@ -831,6 +835,232 @@ static int bosch_bmi323_driver_api_set_gyro_gain(const struct device *dev,
 	}
 
 	return ret;
+}
+
+/* get_acc_odr must be declared before gyro_self_calibration */
+static int bosch_bmi323_driver_api_get_acc_odr(const struct device *dev, struct sensor_value *val);
+
+static int bosch_bmi323_gyro_self_calibration(const struct device *dev)
+{
+	/* Page 53-55 in the datasheet */
+	int16_t buf;
+	int ret;
+
+	/* Check for ongoing self-calibration, self-test or error-mode */
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_FEATURE_IO1, &buf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+	if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+			!= IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, IDLE) ) {
+		LOG_WRN("Self-calibration not initiated due to ongoing self-calibration, self-test or error-mode");
+		return -EAGAIN;
+	}
+
+	/* Enforce default self-calibration configuration */
+	uint16_t conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYR_SC_SELECT, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_SC_SELECT, SENS_EN);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(GYR_SC_SELECT, SENS_EN, EN);
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_SC_SELECT, OFFS_EN);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(GYR_SC_SELECT, OFFS_EN, EN);
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYR_SC_SELECT, APPLY_CORR);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(GYR_SC_SELECT, APPLY_CORR, EN);
+
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYR_SC_SELECT, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* The accelerometer is required to be enabled (already) in high performance mode */
+	struct sensor_value hpwr_val = {1, 0};
+	ret = bosch_bmi323_driver_api_set_acc_feature_mask(dev, &hpwr_val);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/** Sample rate of acc is preferred in the range of 25 Hz up to 200 Hz.
+	 * A warning is given if acc_odr is not in the range, but self-calibration still proceeds.
+	*/
+	struct sensor_value odr = {0, 0};
+	ret = bosch_bmi323_driver_api_get_acc_odr(dev, &odr);
+	if (ret < 0) {
+		return ret;
+	}
+	if (odr.val1 < 25 || odr.val1 > 200) {
+		LOG_WRN("Sample rate of acc is not in the preferred range of 25 Hz up to 200 Hz."
+				"Self-calibration still proceeds."
+		);
+	}
+
+	/* Disable alternative sensor configurations */
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ALT_ACC_CONF, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(ALT_ACC_CONF, ALT_ACC_MODE);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(ALT_ACC_CONF, ALT_ACC_MODE, DIS);
+
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ALT_ACC_CONF, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ALT_GYR_CONF, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	conf &= ~IMU_BOSCH_BMI323_REG_MASK(ALT_GYR_CONF, ALT_GYR_MODE);
+	conf |= IMU_BOSCH_BMI323_REG_VALUE(ALT_GYR_CONF, ALT_GYR_MODE, DIS);
+
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ALT_GYR_CONF, &conf, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+
+	/** Gyroscope user offset and user sensitivity error registers must be cleared out before each self-calibration execution.
+	 * It is strongly recommended to update the registers only when the sensors are disabled to avoid settling
+	 * of the respective signal, that means either accelerometer or gyroscope, after the values are updated.
+	 * */
+	struct sensor_value sensor_val_zero = {0, 0};
+	struct sensor_value sensor_val_one = {1, 0};
+
+	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &sensor_val_zero);
+	if (ret < 0) {
+		LOG_WRN("Could not disable gyro during self-calibration setup.");
+		return ret;
+	}
+
+	ret = bosch_bmi323_driver_api_set_gyro_offset(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_X);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_offset(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Y);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_offset(dev, &sensor_val_zero, SENSOR_CHAN_GYRO_Z);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_one, SENSOR_CHAN_GYRO_X);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_one, SENSOR_CHAN_GYRO_Y);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = bosch_bmi323_driver_api_set_gyro_gain(dev, &sensor_val_one, SENSOR_CHAN_GYRO_Z);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* Set gyro to high performance mode */
+	ret = bosch_bmi323_driver_api_set_gyro_feature_mask(dev, &sensor_val_one);
+	if (ret < 0) {
+		LOG_WRN("Could not enable gyro again before self-calibration.");
+		return ret;
+	}
+
+	/* Ready to commence self-calibration */
+
+	uint16_t cmd = IMU_BOSCH_BMI323_REG_VALUE(CMD, CMD, SELF_CALIBRATION);
+
+	ret = bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_CMD, &cmd, 1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/**
+	 * According to the datasheet, "The duration of the self-calibration for standard settings is approximately 350ms
+	 * for the measurement of the re-scaling for the angular rate and 80ms for the gyroscope offset measurement."
+	 * Through experimentation, the actual time that SC took was around 275ms (slept 250ms + 5*5ms)
+	 */
+	k_msleep(IMU_BOSCH_BMI323_SC_TIMEOUT_MS);
+
+	/* To avoid reliance on interrupts, we can poll FEATURE_IO1 */
+	for (int i = 0; i <= IMU_BOSCH_BMI323_SC_POLL_ATTEMPTS; i++){
+		ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_FEATURE_IO1, &buf, 1);
+		if (ret < 0) {
+			return ret;
+		}
+
+		if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, ERROR_STATUS))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, ERROR_STATUS, SC_OR_ST_ABORT)){
+			LOG_WRN("Ongoing self-calibration (gyroscope only) or self-test (gyroscope only) was aborted."
+				" The command was aborted either due to device movements or due to the abort command"
+				" (self-calibration only) or due to a request to enable I3C TC-sync feature (self-calibration only)."
+			);
+			return -EINVAL;
+		}
+		else if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, ERROR_STATUS))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, ERROR_STATUS, SC_CMD_IGN)){
+			LOG_WRN("Self-calibration (gyroscope only) command ignored because either"
+				" self-calibration or self-test or I3C TC-sync was ongoing"
+			);
+			return -EINVAL;
+		}
+		else if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, ERROR_STATUS))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, ERROR_STATUS, SC_OR_ST_CMD_NOT_PROC)){
+			LOG_WRN("Self-calibration (gyroscope only) or self-test (accelerometer and/or gyroscope) command"
+				" was not processed because pre-conditions were not met. Either accelerometer was not configured"
+				" correctly (self-test and self-calibration gyroscope only) or auto-low-power feature was active."
+			);
+			return -EINVAL;
+		}
+		else if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, ERROR_STATUS))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, ERROR_STATUS, ILL_CONF_DUR_SC_OR_ST)){
+			LOG_WRN("Auto-mode change feature was enabled or illegal sensor configuration change detected"
+				" in ACC_CONF/GYR_CONF while self-calibration or self-test was ongoing. Self-calibration"
+				" and self-test results may be inaccurate."
+				);
+			return -EINVAL;
+		}
+		else if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) ){
+			k_msleep(IMU_BOSCH_BMI323_SC_POLL_MS);
+		}
+		else if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO) ){
+			k_msleep(IMU_BOSCH_BMI323_SC_POLL_MS);
+		}
+		else {
+			LOG_INF("Self-calibration finished.");
+			break;
+		}
+	}
+
+	if ( ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, STATE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, STATE, SC) )   ){
+		LOG_WRN("Self-calibration not finished.");
+		return -EINVAL;
+	}
+	else if ( (buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, SC_ST_COMPLETE))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, SC_ST_COMPLETE, NO) ){
+		LOG_WRN("Self-calibration not finished.");
+		return -EINVAL;
+	}
+
+	if ((buf & IMU_BOSCH_BMI323_REG_MASK(FEATURE_IO1, GYRO_SC_RESULT))
+					== IMU_BOSCH_BMI323_REG_VALUE(FEATURE_IO1, GYRO_SC_RESULT, SUCC)){
+		LOG_INF("Self-calibration successful.");
+	} else {
+		LOG_WRN("Self-calibration failed.");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum sensor_channel chan,
@@ -1812,6 +2042,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_FEATURE_MASK:
 			ret = bosch_bmi323_driver_api_get_gyro_feature_mask(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_CALIB_TARGET:
+			ret = bosch_bmi323_gyro_self_calibration(dev);
 
 			break;
 
