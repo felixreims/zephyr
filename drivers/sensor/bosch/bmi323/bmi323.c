@@ -278,6 +278,39 @@ static int bosch_bmi323_driver_api_set_acc_bandwidth(const struct device *dev,
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
 }
 
+static int bosch_bmi323_driver_api_set_acc_avg_num(const struct device *dev,
+						       const struct sensor_value *val)
+{
+	int ret;
+	uint16_t acc_conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	acc_conf &= ~IMU_BOSCH_BMI323_REG_MASK(ACC_CONF, AVG_NUM);
+
+	if (val->val1 <= 0) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S0);
+	} else if (val->val1 <= 2) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S2);
+	} else if (val->val1 <= 4) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S4);
+	} else if (val->val1 <= 8) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S8);
+	} else if (val->val1 <= 16) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S16);
+	} else if (val->val1 <= 32) {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S32);
+	} else {
+		acc_conf |= IMU_BOSCH_BMI323_REG_VALUE(ACC_CONF, AVG_NUM, S64);
+	}
+
+	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+}
+
 static int bosch_bmi323_driver_api_set_acc_feature_mask(const struct device *dev,
 							const struct sensor_value *val)
 {
@@ -406,6 +439,39 @@ static int bosch_bmi323_driver_api_set_gyro_bandwidth(const struct device *dev,
 	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
 }
 
+static int bosch_bmi323_driver_api_set_gyro_avg_num(const struct device *dev,
+						       const struct sensor_value *val)
+{
+	int ret;
+	uint16_t gyro_conf;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	gyro_conf &= ~IMU_BOSCH_BMI323_REG_MASK(GYRO_CONF, AVG_NUM);
+
+	if (val->val1 <= 0) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S0);
+	} else if (val->val1 <= 2) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S2);
+	} else if (val->val1 <= 4) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S4);
+	} else if (val->val1 <= 8) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S8);
+	} else if (val->val1 <= 16) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S16);
+	} else if (val->val1 <= 32) {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S32);
+	} else {
+		gyro_conf |= IMU_BOSCH_BMI323_REG_VALUE(GYRO_CONF, AVG_NUM, S64);
+	}
+
+	return bosch_bmi323_bus_write_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
+}
+
 static int bosch_bmi323_driver_api_set_gyro_feature_mask(const struct device *dev,
 							 const struct sensor_value *val)
 {
@@ -456,6 +522,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 			break;
 
+		case SENSOR_ATTR_AVERAGE_NUM:
+			ret = bosch_bmi323_driver_api_set_acc_avg_num(dev, val);
+
+			break;
+
 		case SENSOR_ATTR_FEATURE_MASK:
 			ret = bosch_bmi323_driver_api_set_acc_feature_mask(dev, val);
 
@@ -483,6 +554,11 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_BANDWIDTH:
 			ret = bosch_bmi323_driver_api_set_gyro_bandwidth(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_AVERAGE_NUM:
+			ret = bosch_bmi323_driver_api_set_gyro_avg_num(dev, val);
 
 			break;
 
@@ -640,6 +716,54 @@ static int bosch_bmi323_driver_api_get_acc_bandwidth(const struct device *dev,
 	} else {
 		val->val1 = 0;
 		val->val2 = 0;
+	}
+
+	return 0;
+}
+
+static int bosch_bmi323_driver_api_get_acc_avg_num(const struct device *dev,
+							 struct sensor_value *val)
+{
+	uint16_t acc_conf;
+	int ret;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_ACC_CONF, &acc_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(acc_conf, ACC_CONF, AVG_NUM)) {
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S0:
+		val->val1 = 0;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S2:
+		val->val1 = 2;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S4:
+		val->val1 = 4;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S8:
+		val->val1 = 8;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S16:
+		val->val1 = 16;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S32:
+		val->val1 = 32;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_ACC_CONF_AVG_NUM_VAL_S64:
+		val->val1 = 64;
+		val->val2 = 0;
+		break;
+	default:
+		return -EINVAL;
 	}
 
 	return 0;
@@ -807,6 +931,54 @@ static int bosch_bmi323_driver_api_get_gyro_bandwidth(const struct device *dev,
 	return 0;
 }
 
+static int bosch_bmi323_driver_api_get_gyro_avg_num(const struct device *dev,
+							 struct sensor_value *val)
+{
+	uint16_t gyro_conf;
+	int ret;
+
+	ret = bosch_bmi323_bus_read_words(dev, IMU_BOSCH_BMI323_REG_GYRO_CONF, &gyro_conf, 1);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	switch (IMU_BOSCH_BMI323_REG_VALUE_GET_FIELD(gyro_conf, GYRO_CONF, AVG_NUM)) {
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S0:
+		val->val1 = 0;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S2:
+		val->val1 = 2;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S4:
+		val->val1 = 4;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S8:
+		val->val1 = 8;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S16:
+		val->val1 = 16;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S32:
+		val->val1 = 32;
+		val->val2 = 0;
+		break;
+	case IMU_BOSCH_BMI323_REG_GYRO_CONF_AVG_NUM_VAL_S64:
+		val->val1 = 64;
+		val->val2 = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int bosch_bmi323_driver_api_get_gyro_feature_mask(const struct device *dev,
 							 struct sensor_value *val)
 {
@@ -856,6 +1028,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 			break;
 
+		case SENSOR_ATTR_AVERAGE_NUM:
+			ret = bosch_bmi323_driver_api_get_acc_avg_num(dev, val);
+
+			break;
+
 		case SENSOR_ATTR_FEATURE_MASK:
 			ret = bosch_bmi323_driver_api_get_acc_feature_mask(dev, val);
 
@@ -883,6 +1060,11 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 		case SENSOR_ATTR_BANDWIDTH:
 			ret = bosch_bmi323_driver_api_get_gyro_bandwidth(dev, val);
+
+			break;
+
+		case SENSOR_ATTR_AVERAGE_NUM:
+			ret = bosch_bmi323_driver_api_get_gyro_avg_num(dev, val);
 
 			break;
 
