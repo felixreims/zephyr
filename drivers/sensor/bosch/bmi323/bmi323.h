@@ -10,19 +10,6 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/types.h>
 
-/**
- * Configure the -3dB cut-off frequency.
- * sensor_value.val1 = 0 selects ODR/2.
- * sensor_value.val1 = 1 selects ODR/4.
- */
-#define SENSOR_ATTR_BANDWIDTH (SENSOR_ATTR_PRIV_START + 0)
-
-/**
- * Configure number of samples to be averaged.
- * sensor_value.val1 is the number of samples to be averaged.
- */
-#define SENSOR_ATTR_AVERAGE_NUM (SENSOR_ATTR_PRIV_START + 1)
-
 #define IMU_BOSCH_BMI323_REG_ACC_DATA_X (0x03)
 #define IMU_BOSCH_BMI323_REG_ACC_DATA_Y (0x04)
 #define IMU_BOSCH_BMI323_REG_ACC_DATA_Z (0x05)

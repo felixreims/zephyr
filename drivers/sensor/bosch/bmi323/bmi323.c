@@ -11,6 +11,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/drivers/sensor/bmi323.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/pm/device_runtime.h>
 
@@ -1128,7 +1129,7 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_XYZ:
-		switch (attr) {
+		switch ((uint32_t)attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
 			ret = bosch_bmi323_driver_api_set_acc_odr(dev, val);
 
@@ -1223,7 +1224,7 @@ static int bosch_bmi323_driver_api_attr_set(const struct device *dev, enum senso
 		break;
 
 	case SENSOR_CHAN_GYRO_XYZ:
-		switch (attr) {
+		switch ((uint32_t)attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
 			ret = bosch_bmi323_driver_api_set_gyro_odr(dev, val);
 
@@ -2002,7 +2003,7 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_XYZ:
-		switch (attr) {
+		switch ((uint32_t)attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
 			ret = bosch_bmi323_driver_api_get_acc_odr(dev, val);
 
@@ -2097,7 +2098,7 @@ static int bosch_bmi323_driver_api_attr_get(const struct device *dev, enum senso
 		break;
 
 	case SENSOR_CHAN_GYRO_XYZ:
-		switch (attr) {
+		switch ((uint32_t)attr) {
 		case SENSOR_ATTR_SAMPLING_FREQUENCY:
 			ret = bosch_bmi323_driver_api_get_gyro_odr(dev, val);
 
